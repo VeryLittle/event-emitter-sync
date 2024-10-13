@@ -4,7 +4,7 @@ import { EventEmitter } from "./emitter";
 import { EventDelayedRepository } from "./event-repository";
 import { EventStatistics } from "./event-statistics";
 import { ResultsTester } from "./results-tester";
-import { triggerRandomly } from "./utils";
+import { triggerRandomly, awaitTimeout } from "./utils";
 
 const MAX_EVENTS = 1000;
 
@@ -67,22 +67,43 @@ class EventHandler extends EventStatistics<EventName> {
     super();
     this.repository = repository;
 
-    emitter.subscribe(EventName.EventA, () =>
-      this.repository.saveEventData(EventName.EventA, 1)
-    );
+    EVENT_NAMES.forEach((eventName) => {
+      emitter.subscribe(eventName, () => {
+        this.setStats(eventName, this.getStats(eventName) + 1);
+        this.repository.saveEventData(eventName, 1);
+      });
+    });
   }
 }
 
 class EventRepository extends EventDelayedRepository<EventName> {
   // Feel free to edit this class
 
-  async saveEventData(eventName: EventName, _: number) {
-    try {
-      await this.updateEventStatsBy(eventName, 1);
-    } catch (e) {
-      // const _error = e as EventRepositoryError;
-      // console.warn(error);
+  private changes: Map<EventName, number> = new Map();
+  private syncing = false;
+
+  saveEventData(eventName: EventName, by: number) {
+    this.changes.set(eventName, (this.changes.get(eventName) ?? 0) + by);
+    this.sync().catch(() => {});
+  }
+
+  private async sync() {
+    if (this.syncing) return;
+    this.syncing = true;
+
+    for (let eventName of this.changes.keys()) {
+      const by = this.changes.get(eventName) || 0;
+      this.changes.delete(eventName);
+      this.updateEventStatsBy(eventName, by)
+        .catch((reason) => {
+          if (reason !== "Response delivery fail") {
+            this.saveEventData(eventName, by);
+          }
+        });
+      await awaitTimeout(300);
     }
+
+    this.syncing = false;
   }
 }
 
